@@ -27,6 +27,14 @@ def load_and_clean(filename: str, col_names: list[str]) -> pd.DataFrame:
 population = load_and_clean(
     "Population.csv", ["Year", "Age", "ID_sex", "ID_np", "Population"]
 )
+
+population_total = (
+    population.groupby("Year", as_index=False)["Population"].sum()
+               .rename(columns={"Population": "Population_total_year"})
+)
+
+population_total.to_parquet(CLEAN_DIR / "population_total.parquet", index=False)
+
 births = load_and_clean(
     "Births.csv", ["Year", "Age", "ID_sex", "ID_np", "Birth"]
 )
