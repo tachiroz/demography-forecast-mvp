@@ -13,6 +13,9 @@ import argparse, json, joblib, numpy as np, pandas as pd
 from pathlib import Path
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from statsmodels.tsa.statespace.sarimax import SARIMAX
+from prophet import Prophet
+from xgboost import XGBRegressor
+from catboost import CatBoostRegressor
 
 # ──────────────────────────── пути ────────────────────────────────────────
 BASE = Path(__file__).resolve().parents[2]
@@ -41,7 +44,35 @@ def train_sarimax(params: dict):
     pred.index = y_test.index
     return mdl, pred
 
-TRAINERS = {"sarimax": train_sarimax}
+
+def train_prophet(params):
+    df = y_train.reset_index().rename(columns={"Year":"ds","Births_total_year":"y"})
+    m = Prophet(**params).fit(df)
+    fut = pd.DataFrame({"ds": y_test.index})
+    pred = pd.Series(m.predict(fut)["yhat"].values, index=y_test.index)
+    return m, pred
+
+def _make_ts_features(n):                # simple “time index” feature
+    return np.arange(n).reshape(-1,1)
+
+def train_xgb(params):
+    Xtr, Xte = _make_ts_features(len(y_train)), _make_ts_features(len(y_train)+len(y_test))[len(y_train):]
+    mdl = XGBRegressor(**params).fit(Xtr, y_train)
+    pred = pd.Series(mdl.predict(Xte), index=y_test.index)
+    return mdl, pred
+
+def train_cat(params):
+    Xtr, Xte = _make_ts_features(len(y_train)), _make_ts_features(len(y_train)+len(y_test))[len(y_train):]
+    mdl = CatBoostRegressor(verbose=0, **params).fit(Xtr, y_train)
+    pred = pd.Series(mdl.predict(Xte), index=y_test.index)
+    return mdl, pred
+
+TRAINERS = {
+    "sarimax": train_sarimax,
+    "prophet": train_prophet,
+    "xgb":     train_xgb,
+    "cat":     train_cat,
+}
 
 # ──────────────────────── метрики ─────────────────────────────────────────
 def evaluate(y_true, y_pred):

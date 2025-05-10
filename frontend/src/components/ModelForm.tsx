@@ -1,7 +1,12 @@
 import { useState } from 'react';
 
-export default function ModelForm({ onTrained }: { onTrained: () => void }) {
-  const [model, setModel] = useState('sarimax');
+interface Props {
+  selected: string;                  // текущий выбор в селекте
+  onSelect: (m: string) => void;     // меняем выбор
+  onTrained: () => void;             // сообщаем, что обучение завершилось
+}
+
+export default function ModelForm({ selected, onSelect, onTrained }: Props) {
   const [loading, setLoading] = useState(false);
 
   const train = async () => {
@@ -9,19 +14,22 @@ export default function ModelForm({ onTrained }: { onTrained: () => void }) {
     await fetch('/train', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, params: {} }),
+      body: JSON.stringify({ model: selected, params: {} }),
     });
     setLoading(false);
-    onTrained();          // сообщаем родителю: можно тянуть метрики и график
+    onTrained();                     // сигнал «готово»
   };
 
   return (
     <div style={{ marginBottom: 12 }}>
       <label style={{ marginRight: 8 }}>Model:</label>
-      <select value={model} onChange={e => setModel(e.target.value)}>
+      <select value={selected} onChange={e => onSelect(e.target.value)}>
         <option value="sarimax">SARIMAX</option>
-        {/* позже добавим prophet, xgb, cat */}
+        <option value="prophet">Prophet</option>
+        <option value="xgb">XGBoost</option>
+        <option value="cat">CatBoost</option>
       </select>
+
       <button style={{ marginLeft: 12 }} onClick={train} disabled={loading}>
         {loading ? 'Training…' : 'Train'}
       </button>

@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import subprocess, json, pathlib, uuid, sys   # ← добавили sys
 import pandas as pd
 
+
 BASE = pathlib.Path(__file__).resolve().parents[2]
 app = FastAPI()
 
