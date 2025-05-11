@@ -3,21 +3,33 @@ import ModelForm from './components/ModelForm';
 import MetricsTable from './components/MetricsTable';
 import ForecastChart from './components/ForecastChart';
 
-function DoubleChart({ model }: { model: string }) {
+function DoubleChart({
+  model,
+  future,
+}: {
+  model: string;
+  future: { Year: number[]; y_pred: number[] } | null;
+}) {
+  // будущий прогноз относится либо к Births-модели, либо к Population
+  const futureBirth =
+    model.endsWith('_pop') ? null : future;
+  const futurePop =
+    model.endsWith('_pop') ? future : null;
+
   return (
     <>
-      {/* Births график */}
       <h3>Births</h3>
       <ForecastChart
         model={model === 'sarimax_pop' ? 'sarimax' : model}
         yTitle="Births"
+        future={futureBirth}
       />
 
-      {/* Population график */}
       <h3 style={{ marginTop: 32 }}>Population</h3>
       <ForecastChart
-        model="sarimax_pop"          // всегда population-модель
+        model="sarimax_pop"
         yTitle="Population"
+        future={futurePop}
       />
     </>
   );
@@ -25,12 +37,15 @@ function DoubleChart({ model }: { model: string }) {
 
 export default function App() {
   const [selected, setSelected] = useState('sarimax');
-  const [trained, setTrained]   = useState<string | null>(null);
-  const [version, setVersion]   = useState(0);         // принудительный перерендер
+  const [trained, setTrained] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
+  const [future, setFuture] =
+    useState<{ Year: number[]; y_pred: number[] } | null>(null);
 
   const handleTrained = () => {
-    setTrained(selected);        // какая модель обучилась
-    setVersion(v => v + 1);      // заставим дочерние ключи обновиться
+    setTrained(selected);
+    setFuture(null);          // сбросить предыдущий forecast
+    setVersion(v => v + 1);   // форс-рендер
   };
 
   return (
@@ -41,6 +56,7 @@ export default function App() {
         selected={selected}
         onSelect={setSelected}
         onTrained={handleTrained}
+        onForecast={setFuture}
       />
 
       {trained && (
@@ -52,6 +68,7 @@ export default function App() {
           <DoubleChart
             key={`${trained}-plot-${version}`}
             model={trained}
+            future={future}
           />
         </>
       )}

@@ -7,25 +7,31 @@ interface PredResp {
   y_pred: (number | null)[];
 }
 
-interface Props {
-  model: string;            // 'sarimax' | 'sarimax_pop' | …
-  yTitle: string;           // подпись оси Y
+interface FutureResp {
+  Year: number[];
+  y_pred: number[];
 }
 
-export default function ForecastChart({ model, yTitle }: Props) {
+interface Props {
+  model: string;
+  yTitle: string;
+  future?: FutureResp | null;
+}
+
+export default function ForecastChart({ model, yTitle, future }: Props) {
   const [pred, setPred] = useState<PredResp | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`/preds/${model}`)
       .then(r => r.json())
-      .then(data => {
-        if (data.status === 'error') {
-          setError(data.detail);
+      .then(d => {
+        if (d.status === 'error') {
+          setError(d.detail);
           setPred(null);
         } else {
           setError(null);
-          setPred(data as PredResp);
+          setPred(d as PredResp);
         }
       })
       .catch(err => {
@@ -37,29 +43,41 @@ export default function ForecastChart({ model, yTitle }: Props) {
   if (error) return <p style={{ color: 'red' }}>Ошибка: {error}</p>;
   if (!pred) return null;
 
+  const data = [
+    {
+      x: pred.Year,
+      y: pred.y_hist,
+      mode: 'lines',
+      name: 'Исторические',
+      line: { color: 'black' },
+    },
+    {
+      x: pred.Year,
+      y: pred.y_pred,
+      mode: 'lines',
+      name: `${model.toUpperCase()} (test)`,
+      line: { dash: 'dash' },
+    },
+  ];
+
+  if (future) {
+    data.push({
+      x: future.Year,
+      y: future.y_pred,
+      mode: 'lines',
+      name: `${model.toUpperCase()} (forecast)`,
+      line: { dash: 'dot'},
+    });
+  }
+
   return (
     <Plot
-      data={[
-        {
-          x: pred.Year,
-          y: pred.y_hist,
-          mode: 'lines',
-          name: 'Исторические',
-          line: { color: 'black' },
-        },
-        {
-          x: pred.Year,
-          y: pred.y_pred,
-          mode: 'lines',
-          name: model.toUpperCase(),
-          line: { dash: 'dash' },
-        },
-      ]}
+      data={data}
       layout={{
-        title: model.toUpperCase(),
+        title: yTitle,
         xaxis: { title: 'Year' },
         yaxis: { title: yTitle },
-        legend: { orientation: 'h', x: 0.3, y: 1.15 },
+        legend: { orientation: 'h', x: 0.25, y: 1.15 },
         shapes: [
           {
             type: 'line',
@@ -73,8 +91,8 @@ export default function ForecastChart({ model, yTitle }: Props) {
         ],
         margin: { t: 60, r: 40, l: 60, b: 50 },
       }}
-      style={{ width: '100%', height: 430 }}
-      config={{ responsive: true }}   // оставляем тулбар Plotly
+      style={{ width: '100%', height: 420 }}
+      config={{ responsive: true }}
     />
   );
 }
