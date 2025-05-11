@@ -5,10 +5,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/train':   'http://127.0.0.1:8000',
-      '/metrics': 'http://127.0.0.1:8000',
-      '/preds':   'http://127.0.0.1:8000',
-      '/forecast': 'http://127.0.0.1:8000',
+      '/upload-train': 'http://127.0.0.1:8000',
+      '/forecast':     'http://127.0.0.1:8000',
     },
   },  
 })

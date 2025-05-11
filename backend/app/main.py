@@ -1,99 +1,98 @@
-# backend/app/main.py
-from fastapi import FastAPI
-from pydantic import BaseModel
-import subprocess, json, pathlib, uuid, sys   # ← добавили sys
-import pandas as pd
-import numpy as np
-from fastapi.responses import JSONResponse   # вверху файла
-from fastapi.encoders import jsonable_encoder
-from fastapi import Query
+from fastapi import FastAPI, UploadFile, File, Query, Form
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
+import pandas as pd, numpy as np, io
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 
-BASE = pathlib.Path(__file__).resolve().parents[2]
-app = FastAPI()
+app = FastAPI(title="Demography MVP API")
 
-class TrainRequest(BaseModel):
-    model: str
-    params: dict | None = {}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],            # dev-режим
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.post("/train")
-def train(req: TrainRequest):
-    run_id = uuid.uuid4().hex[:8]
-    cmd = [
-        sys.executable,                       # ← используем тот Python,
-        str(BASE / "src/models/train_models.py"),  #   в котором крутится FastAPI
-        "--model", req.model,
-        "--params", json.dumps(req.params),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        return {"status": "error", "detail": proc.stderr}
-    return {"status": "ok", "run_id": run_id}
+# ───────────────────────── helpers ───────────────────────────
+def mae(a, b):  return float(np.mean(np.abs(a - b)))
+def mape(a, b): return float(np.mean(np.abs((a - b) / a)) * 100)
 
-@app.get("/metrics/{model}")
-def metrics(model: str):
-    """Вернёт словарь {MAE, MSE, MAPE, R2} для выбранной модели."""
-    path = BASE / "reports" / f"metrics_{model}.csv"
-    if not path.exists():
-        return {"status": "error", "detail": "metrics file not found"}
-    return pd.read_csv(path).iloc[0].to_dict()
-
-@app.get("/preds/{model}")
-def preds(model: str):
-    path = BASE / "reports" / f"preds_{model}.csv"
-    if not path.exists():
-        return {"status": "error", "detail": "preds file not found"}
-
-    df = pd.read_csv(path)
-
-    # NaN/±Inf  →  None (чтобы json.dumps не упал)
-    clean = df.replace([np.inf, -np.inf], np.nan).to_dict(orient="list")
-    for k, v in clean.items():
-        clean[k] = [None if (isinstance(x, float) and np.isnan(x)) else x for x in v]
-
-    # jsonable_encoder гарантированно делает всё JSON-совместимым
-    return JSONResponse(content=jsonable_encoder(clean))
-
-@app.get("/forecast/{model}")
-def forecast(model: str,
-             years: int = Query(5, ge=1, le=22)):   # макс до 2046 (2024+22)
+# ───────────────────────── /upload-train ─────────────────────
+def _load(file: UploadFile, target: str) -> pd.DataFrame:
     """
-    Возвращает прогноз ещё `years` лет после 2023-го.
-    Для *_pop моделей — Population, иначе Births.
+    • target  – имя числового столбца, который нужен ('Birth','Death',...)
+    • в файле может быть любой заголовок,
+      0-я колонка = Year, target-колонка = нужное значение
     """
-    import joblib, numpy as np, pandas as pd
+    df = pd.read_csv(file.file)
 
-    mdl_path = BASE / "models" / f"{model}.pkl"
-    preds_path = BASE / "reports" / f"preds_{model}.csv"
-    if not (mdl_path.exists() and preds_path.exists()):
-        return {"status": "error", "detail": "model not trained"}
+    # убираем кавычки и пробелы
+    df.columns = [c.strip().strip('"') for c in df.columns]
+    df = df.applymap(lambda x: str(x).strip().strip('"'))
 
-    mdl = joblib.load(mdl_path)
-    hist = pd.read_csv(preds_path)        # берём последние известные точки
-    last_year = int(hist["Year"].max())
+    # оставляем Year и target
+    df = df[["Year", target]].astype(int)
+    return df
+
+@app.post("/upload-train/")
+async def upload_and_train(
+    births: UploadFile = File(...),
+    deaths: UploadFile = File(...),
+    population: UploadFile = File(...),
+    migration: UploadFile = File(...),
+    model: str = Form("sarimax_pop"),
+):
+    b = _load(births,     "Birth")
+    d = _load(deaths,     "Death")
+    p = _load(population, "Population")
+    m = _load(migration,  "M_come").merge(_load(migration, "M_out"), on="Year")
+    m["Migration"] = m["M_come"] - m["M_out"]
+    m = m[["Year", "Migration"]]
+
+    # агрегируем по годам
+    df = (
+        p.groupby("Year",as_index=False)["Population"].sum()
+         .merge(b.groupby("Year",as_index=False)["Birth"].sum(),      on="Year")
+         .merge(d.groupby("Year",as_index=False)["Death"].sum(),      on="Year")
+         .merge(m.groupby("Year",as_index=False)["Migration"].sum(),  on="Year")
+         .sort_values("Year")
+    )
+
+
+# ───────────────────────── /forecast ─────────────────────────
+@app.post("/forecast/")
+async def forecast(
+    file: UploadFile = File(...),
+    model: str = "sarimax_pop",
+    years: int = Query(5, ge=1, le=22),     # ≤22 лет (до 2046)
+):
+    content = await file.read()
+    df = pd.read_csv(io.BytesIO(content)).fillna(0)
+
+    train = df[df.Year <= 2023].set_index("Year")   # используем всё до 2023
+    last_year = 2023
     future_years = list(range(last_year + 1, last_year + years + 1))
 
-    # --- варианты по модели ---
     if model == "sarimax_pop":
-        # exog = предположим «нулевая миграция + усред. Birth/Death»
-        avg = hist[["y_hist"]].tail(3).mean().values[0]
-        exog_future = pd.DataFrame({
-            "Birth":      [avg]*years,
-            "Death":      [avg]*years,
-            "Migration":  [0]*years,
-        })
-        forecast = mdl.forecast(steps=years, exog=exog_future)
-    elif model == "sarimax":
-        forecast = mdl.forecast(steps=years)
-    else:          # prophet, xgb, cat  работают на Births
-        steps = np.arange(len(hist)+1, len(hist)+years+1).reshape(-1,1)
-        if model == "prophet":
-            df = pd.DataFrame({"ds": future_years})
-            forecast = mdl.predict(df)["yhat"].values
-        else:      # xgb / cat
-            forecast = mdl.predict(steps)
+        y_tr = train.Population
+        X_tr = train[["Birth", "Death", "Migration"]]
 
-    return {
+        last_exog = X_tr.tail(1).to_numpy().repeat(years, axis=0)
+        X_future  = pd.DataFrame(last_exog, columns=X_tr.columns)
+
+        mdl = SARIMAX(
+            y_tr, exog=X_tr,
+            order=(1,1,1), seasonal_order=(0,1,1,1),
+            enforce_invertibility=False
+        ).fit(disp=False)
+        y_pred = mdl.forecast(steps=years, exog=X_future)
+    else:  # sarimax (Births)
+        y_tr = train.Birth
+        mdl = SARIMAX(y_tr, order=(1,1,1), seasonal_order=(0,1,1,1)).fit(disp=False)
+        y_pred = mdl.forecast(steps=years)
+
+    return JSONResponse({
         "Year": future_years,
-        "y_pred": forecast.tolist(),
-    }
+        "y_pred": y_pred.tolist(),
+    })
