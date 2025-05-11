@@ -1,51 +1,81 @@
+# ──────────────────────────────────────────────────────────────
+# data_prepare.py  ―  очистка CSV Росстата, формирование parquet
+# Запускать из корня репо:  python src/data/data_prepare.py
+# ──────────────────────────────────────────────────────────────
+
 from pathlib import Path
 import pandas as pd
 
-BASE_DIR = Path(__file__).resolve().parents[2]
-RAW_DIR  = BASE_DIR / "data" / "raw"
-CLEAN_DIR = BASE_DIR / "data" / "clean"
-CLEAN_DIR.mkdir(parents=True, exist_ok=True)
+BASE = Path(__file__).resolve().parents[2]
+RAW  = BASE / "data" / "raw"
+CLN  = BASE / "data" / "clean"
+CLN.mkdir(parents=True, exist_ok=True)
 
-def load_and_clean(filename: str, col_names: list[str]) -> pd.DataFrame:
-    df_raw = pd.read_csv(RAW_DIR / filename, header=None, names=["raw"])
-    df = (
-        df_raw["raw"]
-        .str.strip('"')            # убираем кавычки
+# ────────────────────────── универсальная функция ─────────────
+def load_and_clean(fname: str, cols: list[str]) -> pd.DataFrame:
+    """
+    • строки в CSV заключены в двойные кавычки => убираем их
+    • разбиваем по запятой, назначаем имена столбцов
+    • всё (кроме потенциальных строковых) → int
+    """
+    raw = pd.read_csv(RAW / fname, header=None, names=["raw"])
+    df  = (
+        raw["raw"]
+        .str.strip('"')
         .str.split(",", expand=True)
     )
-    df.columns = col_names
+    df.columns = cols
 
-    # ── убираем строку-заголовок ──────────────────────────────────────────────
-    if df.loc[0, "Year"] == "Year":
+    if df.loc[0, cols[0]] == cols[0]:      # убираем строку с заголовком
         df = df.iloc[1:]
 
-    # ── превращаем строки в числа ────────────────────────────────────────────
     df = df.astype(int)
-
     return df
 
+# ─────────────────────────── загрузка датасетов ───────────────
 population = load_and_clean(
     "Population.csv", ["Year", "Age", "ID_sex", "ID_np", "Population"]
 )
-
-population_total = (
-    population.groupby("Year", as_index=False)["Population"].sum()
-               .rename(columns={"Population": "Population_total_year"})
-)
-
-population_total.to_parquet(CLEAN_DIR / "population_total.parquet", index=False)
-
 births = load_and_clean(
     "Births.csv", ["Year", "Age", "ID_sex", "ID_np", "Birth"]
 )
 deaths = load_and_clean(
-    "Deaths.csv", ["Year", "Age", "ID_sex", "ID_np", "Died"]
+    "Deaths.csv", ["Year", "Age", "ID_sex", "ID_np", "Death"]
 )
 
-# ── агрегируем: общее число рождений в году ──────────────────────────────────
-births_total = births.groupby("Year", as_index=False)["Birth"].sum()
-births_total.rename(columns={"Birth": "Births_total_year"}, inplace=True)
+# migration может отсутствовать
+try:
+    migration = load_and_clean(
+        "Migration.csv",
+        ["Year", "Age", "ID_sex", "ID_np", "M_come", "M_out"]
+    )
+    migration["Migration"] = migration["M_come"] - migration["M_out"]
+    migration = migration.groupby("Year", as_index=False)["Migration"].sum()
+except FileNotFoundError:
+    print("[WARN] Migration.csv not found – заполняю Migration=0")
+    migration = pd.DataFrame({
+        "Year": births["Year"].unique(),
+        "Migration": 0
+    })
 
-out_file = CLEAN_DIR / "births_total.parquet"
-births_total.to_parquet(out_file, index=False)
-print(f"[OK] Сохранил {out_file.relative_to(BASE_DIR)} ({len(births_total)} строк)")
+# ───────────────────── агрегируем по годам ────────────────────
+births_tot = births.groupby("Year", as_index=False)["Birth"].sum()
+births_tot.rename(columns={"Birth": "Births_total_year"}, inplace=True)
+deaths_tot = deaths.groupby("Year", as_index=False)["Death"].sum()
+pop_tot    = population.groupby("Year", as_index=False)["Population"].sum()
+
+df = (
+    pop_tot
+    .merge(births_tot, on="Year", how="left")
+    .merge(deaths_tot, on="Year", how="left")
+    .merge(migration,  on="Year", how="left")
+    .sort_values("Year")
+)
+
+# ─────────────────────────── сохранение ───────────────────────
+df.to_parquet(CLN / "demography.parquet", index=False)
+births_tot.to_parquet(CLN / "births_total.parquet", index=False)
+
+print("[OK] Сохранил:")
+print(" • data/clean/demography.parquet  →", len(df), "строк")
+print(" • data/clean/births_total.parquet →", len(births_tot), "строк")

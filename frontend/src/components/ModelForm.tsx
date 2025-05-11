@@ -24,7 +24,8 @@ export default function ModelForm({ selected, onSelect, onTrained }: Props) {
     <div style={{ marginBottom: 12 }}>
       <label style={{ marginRight: 8 }}>Model:</label>
       <select value={selected} onChange={e => onSelect(e.target.value)}>
-        <option value="sarimax">SARIMAX</option>
+        <option value="sarimax">SARIMAX (Births)</option>
+        <option value="sarimax_pop">SARIMAX-POP (Population)</option>
         <option value="prophet">Prophet</option>
         <option value="xgb">XGBoost</option>
         <option value="cat">CatBoost</option>

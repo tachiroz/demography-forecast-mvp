@@ -1,16 +1,40 @@
 import { useEffect, useState } from 'react';
 import Plot from 'react-plotly.js';
 
-export default function ForecastChart({ model }: { model: string }) {
-  const [pred, setPred] = useState<any | null>(null);
+interface PredResp {
+  Year: number[];
+  y_hist: (number | null)[];
+  y_pred: (number | null)[];
+}
+
+interface Props {
+  model: string;            // 'sarimax' | 'sarimax_pop' | …
+  yTitle: string;           // подпись оси Y
+}
+
+export default function ForecastChart({ model, yTitle }: Props) {
+  const [pred, setPred] = useState<PredResp | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`/preds/${model}`)
       .then(r => r.json())
-      .then(setPred)
-      .catch(() => setPred(null));
+      .then(data => {
+        if (data.status === 'error') {
+          setError(data.detail);
+          setPred(null);
+        } else {
+          setError(null);
+          setPred(data as PredResp);
+        }
+      })
+      .catch(err => {
+        setError(err.message);
+        setPred(null);
+      });
   }, [model]);
 
+  if (error) return <p style={{ color: 'red' }}>Ошибка: {error}</p>;
   if (!pred) return null;
 
   return (
@@ -18,7 +42,7 @@ export default function ForecastChart({ model }: { model: string }) {
       data={[
         {
           x: pred.Year,
-          y: pred.y_true,
+          y: pred.y_hist,
           mode: 'lines',
           name: 'Исторические',
           line: { color: 'black' },
@@ -32,9 +56,10 @@ export default function ForecastChart({ model }: { model: string }) {
         },
       ]}
       layout={{
-        title: `Forecast – ${model}`,
+        title: model.toUpperCase(),
         xaxis: { title: 'Year' },
-        yaxis: { title: 'Births' },
+        yaxis: { title: yTitle },
+        legend: { orientation: 'h', x: 0.3, y: 1.15 },
         shapes: [
           {
             type: 'line',
@@ -46,8 +71,10 @@ export default function ForecastChart({ model }: { model: string }) {
             line: { dash: 'dot', color: 'grey' },
           },
         ],
+        margin: { t: 60, r: 40, l: 60, b: 50 },
       }}
-      style={{ width: '100%', height: 450 }}
+      style={{ width: '100%', height: 430 }}
+      config={{ responsive: true }}   // оставляем тулбар Plotly
     />
   );
 }

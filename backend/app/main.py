@@ -3,6 +3,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import subprocess, json, pathlib, uuid, sys   # ← добавили sys
 import pandas as pd
+import numpy as np
+from fastapi.responses import JSONResponse   # вверху файла
+from fastapi.encoders import jsonable_encoder
+from fastapi import Query
 
 
 BASE = pathlib.Path(__file__).resolve().parents[2]
@@ -36,13 +40,60 @@ def metrics(model: str):
 
 @app.get("/preds/{model}")
 def preds(model: str):
-    """Вернёт Year-массив и массивы фактов/прогноза для графика."""
     path = BASE / "reports" / f"preds_{model}.csv"
     if not path.exists():
         return {"status": "error", "detail": "preds file not found"}
+
     df = pd.read_csv(path)
+
+    # NaN/±Inf  →  None (чтобы json.dumps не упал)
+    clean = df.replace([np.inf, -np.inf], np.nan).to_dict(orient="list")
+    for k, v in clean.items():
+        clean[k] = [None if (isinstance(x, float) and np.isnan(x)) else x for x in v]
+
+    # jsonable_encoder гарантированно делает всё JSON-совместимым
+    return JSONResponse(content=jsonable_encoder(clean))
+
+@app.get("/forecast/{model}")
+def forecast(model: str,
+             years: int = Query(5, ge=1, le=22)):   # макс до 2046 (2024+22)
+    """
+    Возвращает прогноз ещё `years` лет после 2023-го.
+    Для *_pop моделей — Population, иначе Births.
+    """
+    import joblib, numpy as np, pandas as pd
+
+    mdl_path = BASE / "models" / f"{model}.pkl"
+    preds_path = BASE / "reports" / f"preds_{model}.csv"
+    if not (mdl_path.exists() and preds_path.exists()):
+        return {"status": "error", "detail": "model not trained"}
+
+    mdl = joblib.load(mdl_path)
+    hist = pd.read_csv(preds_path)        # берём последние известные точки
+    last_year = int(hist["Year"].max())
+    future_years = list(range(last_year + 1, last_year + years + 1))
+
+    # --- варианты по модели ---
+    if model == "sarimax_pop":
+        # exog = предположим «нулевая миграция + усред. Birth/Death»
+        avg = hist[["y_hist"]].tail(3).mean().values[0]
+        exog_future = pd.DataFrame({
+            "Birth":      [avg]*years,
+            "Death":      [avg]*years,
+            "Migration":  [0]*years,
+        })
+        forecast = mdl.forecast(steps=years, exog=exog_future)
+    elif model == "sarimax":
+        forecast = mdl.forecast(steps=years)
+    else:          # prophet, xgb, cat  работают на Births
+        steps = np.arange(len(hist)+1, len(hist)+years+1).reshape(-1,1)
+        if model == "prophet":
+            df = pd.DataFrame({"ds": future_years})
+            forecast = mdl.predict(df)["yhat"].values
+        else:      # xgb / cat
+            forecast = mdl.predict(steps)
+
     return {
-        "Year":   df["Year"].tolist(),
-        "y_true": df["y_true"].tolist(),
-        "y_pred": df["y_pred"].tolist(),
+        "Year": future_years,
+        "y_pred": forecast.tolist(),
     }
